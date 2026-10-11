@@ -29,6 +29,7 @@ int RaceItems::blueTarget(const ItemActor& a)const{
     for(unsigned i=0;i<count_;++i){unsigned r=rank(i);
         if(racers_[i].finished&&!a.guidance.ownerLed)continue;
         if(int(i)==a.owner&&r!=1)continue;
+        if(a.owner>=0&&int(i)!=a.owner&&teams_[i]>=0&&teams_[i]==teams_[unsigned(a.owner)])continue; // no teammates
         if(r<best){best=r;result=int(i);}
     }
     return result;
@@ -39,6 +40,7 @@ int RaceItems::redTarget(const ItemActor& a,bool ranked)const{
     int result=-1;float best=16000000.f;unsigned ownerRank=rank(unsigned(a.owner));
     for(unsigned i=0;i<count_;++i){const auto& r=racers_[i];unsigned candidateRank=rank(i);
         if(int(i)==a.owner||r.finished||missing(r))continue;
+        if(a.owner>=0&&teams_[i]>=0&&teams_[i]==teams_[unsigned(a.owner)])continue; // no teammates
         if(ranked&&ownerRank<=candidateRank){if(ownerRank!=1||candidateRank>3||(candidateRank==1&&count_>1))continue;}
         if(candidateRank!=1&&(r.shellTargetProtected||r.controlLocked||r.inCannon||invincible(i)||hud_[i].mega))continue;
         Vec3 d=r.position-a.position;float xz=shellXZ2(d);if(xz>best)continue;

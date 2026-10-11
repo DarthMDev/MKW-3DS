@@ -6,6 +6,7 @@
 namespace mkw {
 class Renderer;
 class RaceItems;
+class Battle;
 struct CountdownCue {int digit=0;bool go=false;float scale=1,alpha=1;unsigned frame=0;};
 // The original 240-tick countdown. RacePage_afterCalc (USA 0x80835A28) sets
 // count n's message (3, 2, 1, GO) and starts its animation at timer
@@ -36,6 +37,9 @@ public:
     // exitSlide: the race-end CtrlRaceBase hide slide 0..1, or -1.
     void drawOverlay(Renderer&,const RaceItems&,unsigned stage,unsigned timer,unsigned rank,unsigned lap,bool finished,unsigned tick,int finishFrame=-1,float exitSlide=-1.f);
     bool speedometer=true; // SELECT toggles it during a race
+    // Battle: the lap counter and position give way to drawBattle's panes.
+    bool battleHud=false;
+    void drawBattle(Renderer&,const Battle&,float exitSlide=-1.f);
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
 };

@@ -1,5 +1,6 @@
 #include <mkw/render_quality.hpp>
 #include <mkw/race_hud.hpp>
+#include <mkw/battle.hpp>
 #include <mkw/render_metrics.hpp>
 #include <mkw/race_items.hpp>
 #include <mkw/item_box.hpp>
@@ -590,10 +591,12 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
     // CtrlRaceLap_1_0 (y 133, scale 0.8) leaves upward.
     const float lapLift=exitLift(.8f);
     auto lifted=[&](HudRect r,float dy){r.y+=dy;return r;};
+    if(!battleHud){
     gold(impl_->extras[HudLap],HudExtras[HudLap],lifted(HudLapLabel,-lapLift));gold(impl_->extras[HudSlash],HudExtras[HudSlash],lifted(HudLapSlash,-lapLift));
     lap=std::clamp(lap,1u,3u);
     gold(impl_->digits[lap],HudDigits[lap],lifted(HudLapCurrent,-lapLift));
     gold(impl_->digits[3],HudDigits[3],lifted(HudLapTotal,-lapLift));
+    }
     // Speedometer (not in the original): the player's speed in the game's own
     // units, which Wii speedometer mods label km/h. Bottom right, the one free
     // corner, in the lap counter's gold digits; leaves downward with the HUD.
@@ -605,6 +608,7 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
         for(int i=0;i<n;++i){const unsigned d=unsigned(text[i]-'0');gold(impl_->digits[d],HudDigits[d],{Right-Size-float(n-1-i)*Advance,Top+lift,Size,Size});}
         renderer.drawScreenText("KM/H",Right-26,Top+Size+3+lift,1.f,0xffffffffu);
     }
+    if(!battleHud){
     rank=std::clamp(rank,1u,12u);
     auto& rs=impl_->rankSpin;
     if(!rs.shown){rs.shown=rank;rs.lastTick=tick;}
@@ -644,6 +648,7 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
         // defolt_color sets only black RGB on position_l_00: its alpha stays 0.
         renderer.drawScreenFontSprite(impl_->ranks[shown],cx-w*.5f,cy-h*.5f,w,h,art.u,art.v,echoAlpha,0xffffffffu,0xffffffffu,0xffffff00u,0xffffffffu);
     }
+    }
     renderer.setScreenDepth(hudDepth);
     auto count=[&](HudExtra which,unsigned frame){
         const auto& art=HudExtras[which];
@@ -662,5 +667,29 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
     // RaceHUD::BeforeControlUpdate 0x8083525C: FINISH (Race.bmg 0x4B5) plays
     // CtrlRaceCount::FadeIn once; go_fade_in ends transparent at frame 70.
     if(finished&&finishFrame>=0&&unsigned(finishFrame)<HudCountFrames.size())count(HudFinish,unsigned(finishFrame));
+}
+void RaceHud::drawBattle(Renderer& renderer,const Battle& battle,float exitSlide){
+    if(!battle.battle()||exitSlide>=1.f)return;
+    // Team scores in the lap counter's digits, red on the left, blue on the right,
+    // with the time left between them; the player's balloons or coins below left.
+    static constexpr uint32_t Red=0xff5050ffu,Blue=0x5090ffffu;
+    const float drop=exitSlide>0?exitSlide*80.f:0.f;
+    auto number=[&](unsigned value,float x,float top,float size,uint32_t tint){
+        char text[8];const int n=std::snprintf(text,sizeof text,"%u",std::min(value,999u));
+        for(int i=0;i<n;++i){const unsigned d=unsigned(text[i]-'0');const auto& art=HudDigits[d];
+            renderer.drawScreenSpriteRegion(impl_->digits[d],x+float(i)*size*.68f,top,size,size,0,0,art.u,art.v,1.f,tint);}
+    };
+    // RED nn on the left of the clock, BLUE nn on the right.
+    renderer.drawScreenText("RED",96,8-drop,2.f,Red);
+    number(battle.score(0),134,2-drop,30,Red);
+    renderer.drawScreenText("BLUE",236,8-drop,2.f,Blue);
+    number(battle.score(1),286,2-drop,30,Blue);
+    const unsigned left=(battle.framesLeft()+59)/60;char clock[16];std::snprintf(clock,sizeof clock,"%u:%02u",left/60,left%60);
+    renderer.drawScreenText(clock,200-float(std::strlen(clock))*6.f,38-drop,2.f,left<=10?0xff4040ffu:0xffffffffu);
+    const bool coins=battle.kind()==BattleKind::Coin;
+    const uint32_t mine=battle.team(0)==0?Red:Blue;
+    renderer.drawScreenText(coins?"COINS":"BALLOONS",18,186+drop,2.f,mine);
+    if(battle.out(0)&&!coins)renderer.drawScreenText("OUT",18,206+drop,3.f,0xffffffffu);
+    else number(coins?battle.coins(0):battle.balloons(0),18,202+drop,32,0xffffffffu);
 }
 }

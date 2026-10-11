@@ -2,6 +2,7 @@
 #include <mkw/renderer.hpp>
 #include <mkw/course_objects.hpp>
 #include <mkw/course_catalog.hpp>
+#include <mkw/battle.hpp>
 #include <mkw/qa.hpp>
 #include <mkw/animation.hpp>
 #include <mkw/driver_controller.hpp>
@@ -102,6 +103,9 @@ static bool fullRace=false,automaticDrift=false;
 // Time Trials: one racer, no item boxes, a Triple Mushroom at the start, and
 // the best finish per course kept on the SD card (milliseconds, 0 = none).
 static bool timeTrial=false,newRecord=false;
+// Battle (Balloon Battle / Coin Runners) and Team VS rules: src/battle.cpp.
+static mkw::BattleKind battleKind=mkw::BattleKind::None;static bool teamRace=false,battleEnded=false;
+static mkw::Battle battle;
 static std::array<uint32_t,32> bestTimes{};
 static constexpr const char* BestTimesPath="sdmc:/3ds/mkw-3ds/best-times.bin";
 static void loadBestTimes(){bestTimes={};if(FILE* f=fopen(BestTimesPath,"rb")){if(fread(bestTimes.data(),sizeof(uint32_t),bestTimes.size(),f)!=bestTimes.size())bestTimes={};fclose(f);}}
@@ -506,7 +510,7 @@ int main() {
         if(FILE* f=fopen("sdmc:/3ds/mkw-3ds/menu-result.json","w")){fprintf(f,"{\"pass\":%s,\"pages\":%u,\"transition_frames\":%u,\"top_only\":true}\n",ok&&captured==expected?"true":"false",unsigned(std::size(pages)),motionFrames);fclose(f);}else ok=false;
         report(ok?"MENU SCREENSHOT PASS":"MENU SCREENSHOT FAIL");renderer.waitForGpu();menuModels.reset(renderer);menuIcons.reset(renderer);menuRenderer.release();renderer.shutdown();gfxExit();return ok?0:4;
     }
-    auto applySelection=[&](){timeTrial=menu.selection.mode==mkw::UiMode::TimeTrials;newRecord=false;if(timeTrial)loadBestTimes();courseChoice=menu.selection.course;driverChoice=menu.selection.driver;vehicleChoice=menu.selection.vehicle;automaticDrift=menu.selection.automatic;};
+    auto applySelection=[&](){timeTrial=menu.selection.mode==mkw::UiMode::TimeTrials;battleKind=menu.selection.mode!=mkw::UiMode::Battle?mkw::BattleKind::None:menu.selection.coinRunners?mkw::BattleKind::Coin:mkw::BattleKind::Balloon;teamRace=menu.selection.mode==mkw::UiMode::VS&&menu.selection.teams;newRecord=false;if(timeTrial)loadBestTimes();courseChoice=menu.selection.mode==mkw::UiMode::Battle?mkw::BattleCourseBase+menu.selection.battleStage:menu.selection.course;driverChoice=menu.selection.driver;vehicleChoice=menu.selection.vehicle;automaticDrift=menu.selection.automatic;};
     if(fullRace){if(runMenu()!=mkw::UiAction::StartRace){finishAutoplay();renderer.waitForGpu();menuModels.reset(renderer);menuIcons.reset(renderer);menuRenderer.release();mkw::SoundSystem::instance().stop();mkw::MenuMovieAudio::shutdown();renderer.shutdown();gfxExit();return 0;}applySelection();menu.raceStarted();raceLoadStart=svcGetSystemTick();}
     bool dataReady=exists("Race/Common.szs")&&courseAvailable(courseChoice);
     if(dataReady&&(kQa&&exists("sdmc:/3ds/mkw-3ds/trace-test.txt"))) {
@@ -609,18 +613,21 @@ int main() {
         const unsigned n=std::min(raceGrid.count(),12u);
         std::array<unsigned,12> order{};for(unsigned i=0;i<n;++i)order[i]=i;
         std::stable_sort(order.begin(),order.begin()+n,[&](unsigned a,unsigned b){return raceGrid.rank(a)<raceGrid.rank(b);});
+        // Battle: rows by personal score (balloons popped or coins held), red first on ties.
+        if(battle.battle())std::stable_sort(order.begin(),order.begin()+n,[&](unsigned a,unsigned b){return battle.personal(a)!=battle.personal(b)?battle.personal(a)>battle.personal(b):battle.team(a)<battle.team(b);});
         std::array<mkw::RaceResultEntry,12> rows{};
         int length=kQa?snprintf(line,sizeof line,"results race %u/%u:",vsSet.race,mkw::RaceResultsFlow::VSRaces):0;
         for(unsigned p=0;p<n;++p){
             const unsigned i=order[p];auto& r=rows[p];
             r.racer=uint8_t(i);r.character=uint8_t(scenario.players[i].character);r.human=i==0;
-            r.previous=vsSet.points[i];r.gain=timeTrial?0:uint16_t(mkw::RaceResultsFlow::points(n,p+1));
+            r.previous=battle.battle()?0:vsSet.points[i];r.gain=battle.battle()?uint16_t(battle.personal(i)):timeTrial?0:uint16_t(mkw::RaceResultsFlow::points(n,p+1));
+            if(battle.battle())continue; // battle points are not a VS set's
             vsSet.points[i]=uint16_t(std::min(99999u,unsigned(r.previous)+r.gain));
             if(kQa&&length>0&&size_t(length)<sizeof line)length+=snprintf(line+length,sizeof line-size_t(length)," %u:%u+%u",i,unsigned(r.previous),unsigned(r.gain));
         }
         report(line);
         // Time Trials: Next returns to the course choice; no set to finish.
-        results.fill(rows.data(),n,!timeTrial&&vsSet.race>=mkw::RaceResultsFlow::VSRaces);
+        results.fill(rows.data(),n,!timeTrial&&!battle.battle()&&vsSet.race>=mkw::RaceResultsFlow::VSRaces);
     };
     auto startIntro=[&](){
         intro.stop();
@@ -770,6 +777,17 @@ int main() {
         raceItems->resetFromCourse(raceGrid.count());
         if(!raceItems->oddsReady()){trackLoadFailed=true;report("FAIL original item odds load");}
         if(timeTrial){raceItems->reset({},raceGrid.count());raceItems->give(0,mkw::ItemKind::TripleMushroom);newRecord=false;}
+        battleEnded=false;
+        if(battleKind!=mkw::BattleKind::None){
+            // Coin Runners' coins: the arena's coin objects (GOBJ 0x73).
+            std::vector<mkw::Vec3> coins;const auto* map=K::System::CourseMap::Instance();
+            if(battleKind==mkw::BattleKind::Coin)for(unsigned i=0;i<map->getGeoObjCount();++i){const auto* obj=map->getGeoObj(i);if(obj->id()==0x73&&(obj->presenceFlag()&1))coins.push_back(vec(obj->pos()));}
+            battle.start(battleKind,raceGrid.count(),coins);
+        }else if(teamRace)battle.startTeams(raceGrid.count());
+        else battle.stop();
+        raceItems->clearTeams();
+        if(battle.teams())for(unsigned i=0;i<raceGrid.count();++i)raceItems->setTeam(i,battle.team(i));
+        LOGF("battle kind=%d teams=%d coins=%u",int(battleKind),int(battle.teams()),unsigned(battle.coinSpots().size()));
         if(reload){if(!opponents.load()){trackLoadFailed=true;report("FAIL opponent graphics load");}}
         else opponents.resetAnimation();
         LOGF("race_grid count=%u opponents=%u route=%d item_boxes=%u",raceGrid.count(),opponents.count(),raceGrid.routeReady(),unsigned(raceItems->boxes().size()));
@@ -1187,6 +1205,22 @@ int main() {
                 if(fullRace){
                     raceGrid.afterStep();raceItems->afterStepNative(raceGrid.count());opponents.step(physicsSteps+1);
                     auto* kart=K::Kart::KartObjectManager::Instance()->object(0);auto* race=K::System::RaceManager::Instance();
+                    // Battle: this step's hits pop balloons or drop coins; time up ends it.
+                    if(battle.battle()&&!battleEnded&&race->stage()==K::System::RaceManager::Stage::Race){
+                        std::array<mkw::Vec3,mkw::Battle::MaxRacers> positions{};std::array<bool,mkw::Battle::MaxRacers> hits{};
+                        for(unsigned i=0;i<raceGrid.count()&&i<mkw::Battle::MaxRacers;++i)positions[i]=vec(K::Kart::KartObjectManager::Instance()->object(i)->pos());
+                        // A hit is a kart entering a struck state (spin/tumble/blast action,
+                        // a lightning shock, a squash): item events only name player 0's.
+                        static std::array<bool,mkw::Battle::MaxRacers> wasStruck{};
+                        for(unsigned i=0;i<raceGrid.count()&&i<mkw::Battle::MaxRacers;++i){
+                            const auto& st=K::Kart::KartObjectManager::Instance()->object(i)->status();using S=K::Kart::eStatus;
+                            const bool struck=st.onBit(S::InAction,S::Shocked,S::Crushed);
+                            hits[i]=struck&&!wasStruck[i];wasStruck[i]=struck;
+                        }
+                        for(unsigned i=0;i<raceGrid.count();++i)if(kQa&&hits[i])LOGF("battle hit racer=%u team=%d balloons=%u",i,int(battle.team(i)),battle.balloons(i));
+                        if(battle.step(positions,hits)){battleEnded=true;results.finish();LOGF("battle over red=%u blue=%u",battle.score(0),battle.score(1));}
+                        if(kQa&&physicsSteps%600==0)LOGF("battle red=%u blue=%u left=%u balloons=%u coins=%u",battle.score(0),battle.score(1),battle.framesLeft(),battle.balloons(0),battle.coins(0));
+                    }
                     // Item blasts shake the camera of a nearby racer (OnKill -> RMCU 0x8059e034).
                     for(const auto& e:raceItems->events()){
                         if(e.effect==mkw::ItemEffect::Explosion&&e.action<0)cameraShake.blast(e.direction,vec(kart->pos()));
@@ -1678,7 +1712,18 @@ int main() {
             // Stereo layers (Mario Kart 7's): the HUD and result boards 4 px
             // behind the screen; the full-screen wipe and the pause menu on the
             // screen plane.
-            if(fullRace&&!intro.active()){auto* race=K::System::RaceManager::Instance();raceHud.drawOverlay(renderer,*raceItems,unsigned(race->stage()),race->timer(),raceGrid.rank(),raceGrid.lap(),raceGrid.finished(),physicsSteps,results.finishFrame(),results.hudSlide());
+            if(fullRace&&!intro.active()){auto* race=K::System::RaceManager::Instance();raceHud.battleHud=battle.battle();raceHud.drawOverlay(renderer,*raceItems,unsigned(race->stage()),race->timer(),raceGrid.rank(),raceGrid.lap(),raceGrid.finished(),physicsSteps,results.finishFrame(),results.hudSlide());
+                if(battle.battle()&&race->stage()>=K::System::RaceManager::Stage::Countdown)raceHud.drawBattle(renderer,battle,results.hudSlide());
+                // Team result once the boards are up: battle team scores, or Team VS
+                // points summed over each team's racers.
+                if(battle.teams()&&results.boardVisible()){
+                    unsigned red=battle.score(0),blue=battle.score(1);
+                    if(!battle.battle()){red=blue=0;for(unsigned i=0;i<raceGrid.count();++i)(battle.team(i)==0?red:blue)+=vsSet.points[i];}
+                    char text[48];snprintf(text,sizeof text,"RED %u  -  %u BLUE",red,blue);
+                    renderer.drawScreenText(text,200-6.f*float(strlen(text)),6,2.f,0xffffffffu);
+                    const char* verdict=red>blue?"RED TEAM WINS!":blue>red?"BLUE TEAM WINS!":"DRAW!";
+                    renderer.drawScreenText(verdict,200-9.f*float(strlen(verdict)),24,3.f,red>blue?0xff5050ffu:blue>red?0x5090ffffu:0xffffffffu);
+                }
                 if(timeTrial&&courseChoice<bestTimes.size()&&!results.hudGone()){
                     // Best time under the lap counter; NEW RECORD! once beaten.
                     char best[32];if(bestTimes[courseChoice]){char t[16];formatTime(t,sizeof t,bestTimes[courseChoice]);snprintf(best,sizeof best,"BEST %s",t);}else snprintf(best,sizeof best,"BEST -:--.---");

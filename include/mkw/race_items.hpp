@@ -190,6 +190,11 @@ public:
     float heldItemContactRadius(unsigned player,unsigned slot) const;
     // Used by fixtures and deliberate debug controls; never grants items at reset.
     bool give(unsigned player,ItemKind item);
+    // Team battle / Team VS: items pass through the thrower's teammates (-1: no team).
+    // Kept across reset(); clearTeams() returns to every racer for themselves.
+    void setTeam(unsigned player,int8_t team){if(player<MaxRacers)teams_[player]=team;}
+    void clearTeams(){teams_.fill(-1);}
+    int8_t team(unsigned player) const { return player<MaxRacers?teams_[player]:-1; }
     // The roulette an item box contact starts (also driven by QA autoplay).
     bool startRoulette(unsigned player);
     /// Live objects and inventory copies of a retail object type (ItemHolderItem_getCount).
@@ -207,6 +212,7 @@ private:
     std::unique_ptr<ItemKarts> ownKarts_;
     ItemKarts* karts_=nullptr;
     std::vector<ItemBox> boxes_;
+    std::array<int8_t,MaxRacers> teams_{-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
     std::vector<ItemBoxMover> movers_;
     std::vector<ItemBoxLine> lines_;
     std::vector<ItemBoxPress> presses_;

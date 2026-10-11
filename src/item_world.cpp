@@ -319,6 +319,7 @@ bool RaceItems::itemTouchesKart(const ItemActor& a,unsigned player)const{
     // or the item sphere against the kart's collision hull.
     const auto& r=racers_[player];
     if(int(player)==a.owner&&a.age<=a.ownerImmunity)return false;
+    if(a.owner>=0&&int(player)!=a.owner&&teams_[player]>=0&&teams_[player]==teams_[unsigned(a.owner)])return false;
     const Vec3 d=a.position-r.position;const float distance2=dot(d,d);
     const float reach=r.radius+a.radius;
     if(distance2>=reach*reach)return false;
